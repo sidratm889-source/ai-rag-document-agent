@@ -1,0 +1,36 @@
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Uploaded documents and private data
+uploads/
+*.pdf
+
+# Frontend
+node_modules/
+.next/
+out/
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Generated coverage report
+coverage.json
+
+# Local pgvector source repository
+/pgvector/
