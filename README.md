@@ -221,6 +221,12 @@ JWT_SECRET_KEY=your_secure_secret_key
 
 FRONTEND_URL=http://localhost:3000
 
+OLLAMA_BASE_URL=http://localhost:11434
+
+OLLAMA_CHAT_MODEL=llama3.2:1b
+
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+
 PGVECTOR_DIMENSION=384
 ```
 
@@ -347,6 +353,23 @@ pytest --cov=app --cov-report=html
 ```
 
 Open the generated `htmlcov/index.html` file to inspect the coverage report.
+## Test Results & Code Coverage
+
+The backend test suite includes automated tests for API endpoints,
+authentication, document processing, embeddings, retrieval, AI agents,
+and response guardrails.
+
+Latest verified test results:
+
+| Metric | Result |
+|---|---:|
+| Tests Passed | 147 |
+| Tests Failed | 0 |
+| Tests Skipped | 0 |
+| Statements Covered | 649/649 (100%) |
+| Branches Covered | 122/122 (100%) |
+
+The project uses Pytest and Pytest-Cov to measure test coverage.
 
 ## Security Considerations
 

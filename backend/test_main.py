@@ -31,9 +31,10 @@ def test_health_returns_degraded_when_database_is_unavailable():
     response = TestClient(main.app).get("/health")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "degraded"
-    assert response.json()["database"] == "unavailable"
-    assert response.json()["detail"] == "Database connection failed"
+    assert response.json() == {
+        "status": "degraded",
+        "database": "unavailable",
+    }
 
 
 def test_health_uses_default_error_when_not_configured():
@@ -45,7 +46,10 @@ def test_health_uses_default_error_when_not_configured():
     response = TestClient(main.app).get("/health")
 
     assert response.status_code == 200
-    assert response.json()["detail"] == "database not configured"
+    assert response.json() == {
+        "status": "degraded",
+        "database": "unavailable",
+    }
 
 
 def test_db_test_returns_connected(monkeypatch):
@@ -67,8 +71,7 @@ def test_db_test_returns_error(monkeypatch):
     response = TestClient(main.app).get("/db-test")
 
     assert response.status_code == 200
-    assert response.json()["database"] == "error"
-    assert response.json()["detail"] == "Connection failed"
+    assert response.json() == {"database": "error"}
 
 def test_startup_database_failure_sets_degraded_state(monkeypatch):
     import app.database.connection as db_connection
