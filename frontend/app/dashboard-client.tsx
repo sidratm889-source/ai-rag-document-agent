@@ -1,12 +1,60 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 type ChatMessage = {
   role: "user" | "assistant";
   content: string;
 };
+
+type ListedDocument = {
+  id: number;
+  filename: string;
+  uploaded_at: string | null;
+};
+
+type DocumentListResponse = {
+  items: ListedDocument[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isDocumentListResponse(
+  value: unknown,
+): value is DocumentListResponse {
+  if (!isRecord(value) || !Array.isArray(value.items)) return false;
+
+  const { page, page_size, total, total_pages } = value;
+  return (
+    typeof page === "number" &&
+    Number.isInteger(page) &&
+    page >= 1 &&
+    typeof page_size === "number" &&
+    Number.isInteger(page_size) &&
+    page_size >= 1 &&
+    typeof total === "number" &&
+    Number.isInteger(total) &&
+    total >= 0 &&
+    typeof total_pages === "number" &&
+    Number.isInteger(total_pages) &&
+    total_pages === Math.ceil(total / page_size) &&
+    value.items.every(
+      (item: unknown) =>
+        isRecord(item) &&
+        typeof item.id === "number" &&
+        Number.isInteger(item.id) &&
+        typeof item.filename === "string" &&
+        (item.uploaded_at === null || typeof item.uploaded_at === "string"),
+    )
+  );
+}
 
 type DashboardClientProps = {
   userEmail: string;
@@ -27,6 +75,66 @@ export default function DashboardClient({ userEmail }: DashboardClientProps) {
   const [isAsking, setIsAsking] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [documents, setDocuments] = useState<ListedDocument[]>([]);
+  const [documentSearchInput, setDocumentSearchInput] = useState("");
+  const [documentSearch, setDocumentSearch] = useState("");
+  const [documentPage, setDocumentPage] = useState(1);
+  const [documentOrder, setDocumentOrder] = useState<"asc" | "desc">("desc");
+  const [documentTotal, setDocumentTotal] = useState(0);
+  const [documentTotalPages, setDocumentTotalPages] = useState(0);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(true);
+  const [documentError, setDocumentError] = useState("");
+  const [documentRefreshKey, setDocumentRefreshKey] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({
+      page: String(documentPage),
+      page_size: "10",
+      search: documentSearch,
+      sort: "uploaded_at",
+      order: documentOrder,
+    });
+
+    async function loadDocuments() {
+      setIsLoadingDocuments(true);
+      setDocumentError("");
+
+      try {
+        const response = await fetch(`/api/documents?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        const data: unknown = await response.json();
+
+        if (!response.ok) {
+          const detail = isRecord(data) && typeof data.detail === "string"
+            ? data.detail
+            : "Could not load documents.";
+          throw new Error(detail);
+        }
+
+        if (!isDocumentListResponse(data)) {
+          throw new Error("The document service returned an invalid response.");
+        }
+
+        setDocuments(data.items);
+        setDocumentTotal(data.total);
+        setDocumentTotalPages(data.total_pages);
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setDocumentError(
+          error instanceof Error ? error.message : "Could not load documents.",
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsLoadingDocuments(false);
+        }
+      }
+    }
+
+    void loadDocuments();
+    return () => controller.abort();
+  }, [documentOrder, documentPage, documentRefreshKey, documentSearch]);
 
   async function handleLogout() {
     setIsLoggingOut(true);
@@ -124,6 +232,8 @@ export default function DashboardClient({ userEmail }: DashboardClientProps) {
                 setUploadMessage(
                   `Uploaded successfully: ${data.filename} (ID: ${data.document_id})`,
                 );
+                setDocumentPage(1);
+                setDocumentRefreshKey((key) => key + 1);
               } catch (error) {
                 setUploadMessage(
                   error instanceof Error ? error.message : "Upload failed.",
@@ -277,6 +387,118 @@ export default function DashboardClient({ userEmail }: DashboardClientProps) {
               {isAsking ? "Thinking..." : "Ask AI"}
             </button>
           </form>
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 md:col-span-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Document library</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                {documentTotal} {documentTotal === 1 ? "document" : "documents"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setDocumentPage(1);
+                setDocumentOrder((order) => order === "desc" ? "asc" : "desc");
+              }}
+              className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800"
+            >
+              Upload date: {documentOrder === "desc" ? "Newest first" : "Oldest first"}
+            </button>
+          </div>
+
+          <form
+            className="mt-4 flex flex-col gap-3 sm:flex-row"
+            onSubmit={(event: FormEvent<HTMLFormElement>) => {
+              event.preventDefault();
+              setDocumentPage(1);
+              setDocumentSearch(documentSearchInput.trim());
+              setDocumentRefreshKey((key) => key + 1);
+            }}
+          >
+            <input
+              value={documentSearchInput}
+              onChange={(event) => setDocumentSearchInput(event.target.value)}
+              placeholder="Search filenames..."
+              aria-label="Search document filenames"
+              className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-blue-500"
+            />
+            <button
+              type="submit"
+              className="rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium hover:bg-blue-500"
+            >
+              Search
+            </button>
+          </form>
+
+          {documentError && (
+            <p role="alert" className="mt-4 text-sm text-red-400">
+              {documentError}
+            </p>
+          )}
+
+          <div className="mt-4 overflow-x-auto">
+            {isLoadingDocuments ? (
+              <p className="py-8 text-center text-sm text-slate-400">
+                Loading documents...
+              </p>
+            ) : documents.length === 0 ? (
+              <p className="py-8 text-center text-sm text-slate-400">
+                {documentSearch
+                  ? "No documents match that filename."
+                  : "No documents uploaded yet."}
+              </p>
+            ) : (
+              <table className="w-full min-w-96 text-left text-sm">
+                <thead className="border-b border-slate-800 text-xs uppercase text-slate-500">
+                  <tr>
+                    <th scope="col" className="px-3 py-3 font-medium">Filename</th>
+                    <th scope="col" className="px-3 py-3 font-medium">Uploaded</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {documents.map((document) => (
+                    <tr key={document.id}>
+                      <td className="max-w-0 truncate px-3 py-3 text-slate-200">
+                        {document.filename}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-3 text-slate-400">
+                        {document.uploaded_at
+                          ? new Date(document.uploaded_at).toLocaleString()
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="mt-4 flex items-center justify-between border-t border-slate-800 pt-4">
+            <button
+              type="button"
+              disabled={documentPage <= 1 || isLoadingDocuments}
+              onClick={() => setDocumentPage((page) => page - 1)}
+              className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-slate-400">
+              Page {documentTotal === 0 ? 0 : documentPage} of {documentTotalPages}
+            </span>
+            <button
+              type="button"
+              disabled={
+                documentPage >= documentTotalPages || isLoadingDocuments
+              }
+              onClick={() => setDocumentPage((page) => page + 1)}
+              className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
         </section>
       </div>
     </main>

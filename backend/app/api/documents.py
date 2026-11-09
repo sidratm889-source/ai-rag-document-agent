@@ -1,15 +1,16 @@
 import uuid
+from typing import Literal
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pathlib import Path
+from sqlalchemy.orm import Session
 
 from app.database.connection import SessionLocal
 from app.database.models import Document, DocumentChunk
 from app.rag.loader import extract_text_from_pdf, validate_extracted_text
 from app.services.chunk_service import process_document
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, get_db
 from app.database.models import User
-from fastapi import Depends
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -23,6 +24,50 @@ upload_dir.mkdir(exist_ok=True)
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
+@router.get("")
+def list_documents(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
+    sort: Literal["uploaded_at"] = Query(default="uploaded_at"),
+    order: Literal["asc", "desc"] = Query(default="desc"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    query = db.query(Document).filter(Document.user_id == current_user.id)
+
+    search_term = search.strip() if search else ""
+    if search_term:
+        query = query.filter(Document.filename.ilike(f"%{search_term}%"))
+
+    total = query.count()
+    date_order = (
+        Document.uploaded_at.desc().nullslast()
+        if order == "desc"
+        else Document.uploaded_at.asc().nullslast()
+    )
+    id_order = Document.id.desc() if order == "desc" else Document.id.asc()
+    documents = (
+        query.order_by(date_order, id_order)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return {
+        "items": [
+            {
+                "id": document.id,
+                "filename": document.filename,
+                "uploaded_at": document.uploaded_at,
+            }
+            for document in documents
+        ],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size,
+    }
 
 
 @router.post("/upload")

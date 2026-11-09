@@ -1,5 +1,6 @@
 
 from types import SimpleNamespace
+from datetime import datetime
 from fastapi import HTTPException
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
@@ -7,7 +8,12 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.api import auth as auth_api
 from app.api.dependencies import get_current_user, get_db
-from app.database.models import AuditLog, Conversation, ConversationMessage
+from app.database.models import (
+    AuditLog,
+    Conversation,
+    ConversationMessage,
+    Document,
+)
 from io import BytesIO
 import pytest
 from sqlalchemy import create_engine
@@ -25,6 +31,7 @@ def authenticated_api():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    Document.__table__.create(bind=engine)
     Conversation.__table__.create(bind=engine)
     ConversationMessage.__table__.create(bind=engine)
     AuditLog.__table__.create(bind=engine)
@@ -41,6 +48,94 @@ def authenticated_api():
         app.dependency_overrides.update(previous_overrides)
         db.close()
         engine.dispose()
+
+
+def test_document_list_searches_paginates_and_scopes_to_current_user(
+    authenticated_api,
+):
+    api_client, db = authenticated_api
+    db.add_all([
+        Document(
+            filename="Annual Report.pdf",
+            file_path="private/annual.pdf",
+            uploaded_at=datetime(2026, 1, 1),
+            user_id=1,
+        ),
+        Document(
+            filename="Quarterly report.pdf",
+            file_path="private/quarterly.pdf",
+            uploaded_at=datetime(2026, 1, 3),
+            user_id=1,
+        ),
+        Document(
+            filename="Report notes.pdf",
+            file_path="private/notes.pdf",
+            uploaded_at=datetime(2026, 1, 2),
+            user_id=1,
+        ),
+        Document(
+            filename="Other user's report.pdf",
+            file_path="private/other.pdf",
+            uploaded_at=datetime(2026, 1, 4),
+            user_id=2,
+        ),
+        Document(
+            filename="Unowned report.pdf",
+            file_path="private/unowned.pdf",
+            uploaded_at=datetime(2026, 1, 5),
+            user_id=None,
+        ),
+    ])
+    db.commit()
+
+    first_page = api_client.get(
+        "/documents",
+        params={
+            "page": 1,
+            "page_size": 2,
+            "search": "REPORT",
+            "sort": "uploaded_at",
+            "order": "desc",
+        },
+    )
+
+    assert first_page.status_code == 200
+    first_body = first_page.json()
+    assert first_body["page"] == 1
+    assert first_body["page_size"] == 2
+    assert first_body["total"] == 3
+    assert first_body["total_pages"] == 2
+    assert [item["filename"] for item in first_body["items"]] == [
+        "Quarterly report.pdf",
+        "Report notes.pdf",
+    ]
+    assert "file_path" not in first_body["items"][0]
+
+    second_page = api_client.get(
+        "/documents",
+        params={
+            "page": 2,
+            "page_size": 2,
+            "search": "report",
+            "order": "desc",
+        },
+    )
+
+    assert second_page.status_code == 200
+    assert [item["filename"] for item in second_page.json()["items"]] == [
+        "Annual Report.pdf",
+    ]
+
+    ascending = api_client.get(
+        "/documents",
+        params={"search": "report", "order": "asc"},
+    )
+    assert ascending.status_code == 200
+    assert [item["filename"] for item in ascending.json()["items"]] == [
+        "Annual Report.pdf",
+        "Report notes.pdf",
+        "Quarterly report.pdf",
+    ]
 
 
 def test_health_endpoint():
