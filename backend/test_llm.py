@@ -6,7 +6,7 @@ from app.services import llm
 
 def test_generate_answer_success(monkeypatch):
     def fake_chat(**kwargs):
-        assert kwargs["model"] == "llama3.2:1b"
+        assert kwargs["model"] == "qwen2.5:0.5b"
         assert kwargs["options"] == {
             "temperature": 0,
             "num_predict": 512,

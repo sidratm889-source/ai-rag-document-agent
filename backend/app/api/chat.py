@@ -1,15 +1,21 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from ollama import ResponseError
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.rag.retriever import retrieve_relevant_chunks
-from app.services.llm import generate_answer
 from app.api.dependencies import get_current_user, get_db
 from app.database.models import Conversation, ConversationMessage, User
-from app.agent.agent import run_agent, create_conversation
+from app.agent.agent import (
+    _asks_about_previous_message,
+    create_conversation,
+    is_business_data_question,
+    run_agent,
+    run_source_only_document_query,
+)
+from app.agent.tools import answer_document_question
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +33,7 @@ class ChatRequest(BaseModel):
             "Existing conversation ID. Omit this field to start a new conversation."
         ),
     )
+    document_id: int | None = Field(default=None, gt=0)
 
     @field_validator("question")
     @classmethod
@@ -56,6 +63,7 @@ class AgentChatRequest(BaseModel):
             "Existing conversation ID. Omit this field to start a new conversation."
         ),
     )
+    document_id: int | None = Field(default=None, gt=0)
 
     @field_validator("question")
     @classmethod
@@ -123,21 +131,10 @@ def chat(
             detail="Conversation service is temporarily unavailable.",
         ) from error
 
-    results = retrieve_relevant_chunks(
-        request.question,
-        user_id=current_user.id
-    )
-
-    if not results:
-        answer = (
-            "I couldn't find relevant information "
-            "in the uploaded documents."
-        )
-    else:
-        context = "\n\n".join(
-            chunk.chunk_text for chunk in results
-        )
-        answer = generate_answer(request.question, context)
+    answer_options = {"user_id": current_user.id}
+    if request.document_id is not None:
+        answer_options["document_id"] = request.document_id
+    answer = answer_document_question(request.question, **answer_options)
 
     try:
         db.add_all([
@@ -196,11 +193,37 @@ def agent_chat(
             detail="Conversation service is temporarily unavailable.",
         ) from error
 
-    answer = run_agent(
-        question=request.question,
-        conversation_id=conversation_id,
-        user_id=current_user.id,
-    )
+    if (
+        _asks_about_previous_message(request.question)
+        or is_business_data_question(request.question)
+    ):
+        try:
+            answer = run_agent(
+                question=request.question,
+                conversation_id=conversation_id,
+                user_id=current_user.id,
+            )
+        except ResponseError as error:
+            if "unable to allocate cpu buffer" not in error.error.casefold():
+                raise
+
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Ollama could not load the configured model because the system "
+                    "does not have enough available memory. Free memory or configure "
+                    "a smaller model, then pull it with Ollama."
+                ),
+            ) from error
+    else:
+        source_query_options = {
+            "question": request.question,
+            "conversation_id": conversation_id,
+            "user_id": current_user.id,
+        }
+        if request.document_id is not None:
+            source_query_options["document_id"] = request.document_id
+        answer = run_source_only_document_query(**source_query_options)
 
     return {
         "question":request.question,

@@ -15,6 +15,7 @@ The application also includes authentication, user-specific document access, con
 ## Key Features
 
 - **PDF Document Upload:** Upload and process PDF documents.
+- **Dynamic Structure Detection:** Detect likely headings from extracted PDF text without document-type heading lists.
 - **Retrieval-Augmented Generation (RAG):** Retrieve relevant document content before generating answers.
 - **Semantic Search:** Generate embeddings and perform similarity search using PostgreSQL and pgvector.
 - **AI-Powered Conversations:** Ask natural-language questions about uploaded documents.
@@ -65,10 +66,10 @@ The application also includes authentication, user-specific document access, con
      PDF LOADER       RAG PIPELINE
           |                |
           v                v
-       CHUNKING       EMBEDDING
+   PAGE-AWARE TEXT   EMBEDDING
           |                |
           v                v
-       EMBEDDING     VECTOR SEARCH
+       CHUNKING      VECTOR SEARCH
           |                |
           +-------+--------+
                   |
@@ -103,8 +104,7 @@ The application also includes authentication, user-specific document access, con
 
 ### 2. Text Processing
 
-- Extracted content is divided into smaller chunks.
-- Chunk overlap helps preserve context between neighboring sections.
+- Text is extracted page by page. Likely headings are detected from text layout and wording, without a fixed list of resume, invoice, or research-paper headings. Documents without detectable headings are still chunked and indexed. Chunks retain page and detected-section metadata, and overlap helps preserve context across chunk boundaries.
 - Each chunk is converted into a numerical embedding.
 
 ### 3. Vector Storage
@@ -119,7 +119,11 @@ The application also includes authentication, user-specific document access, con
 - The system generates a query embedding.
 - Relevant document chunks are retrieved through vector similarity search.
 - Retrieved context is passed to the language model.
-- Guardrails help prevent unsupported responses.
+- Answers return matching source excerpts with document and page citations where available. If retrieval does not provide enough evidence, the assistant says it cannot answer rather than filling gaps from general knowledge.
+
+### PDF Text Extraction Scope
+
+The current pipeline uses pypdf text extraction. Image-only/scanned PDFs that contain no extractable text are not OCR-processed and cannot be indexed. Heading detection is heuristic: it records likely headings when the extracted layout provides signals and does not discard content when it cannot identify one.
 
 ### 5. Answer Generation
 
@@ -223,7 +227,7 @@ FRONTEND_URL=http://localhost:3000
 
 OLLAMA_BASE_URL=http://localhost:11434
 
-OLLAMA_CHAT_MODEL=llama3.2:1b
+OLLAMA_CHAT_MODEL=qwen2.5:0.5b
 
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 
@@ -244,7 +248,11 @@ Enable the extension:
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
 
-Run the application's database initialization and migration setup according to the backend configuration.
+From the `backend/` directory, apply the database migrations:
+
+```powershell
+alembic upgrade head
+```
 
 ### 5. Run the Backend
 
@@ -279,7 +287,7 @@ Install Ollama and download the language model configured by the application.
 Example:
 
 ```bash
-ollama pull llama3.2:1b
+ollama pull qwen2.5:0.5b
 ```
 
 Start Ollama:

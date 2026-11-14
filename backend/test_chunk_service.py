@@ -18,6 +18,7 @@ if __name__ == "__main__":
     count = process_document(document_id, text)
     print("Chunks saved:", count)
 from unittest.mock import MagicMock
+from types import SimpleNamespace
 import pytest
 
 from app.services import chunk_service
@@ -28,18 +29,34 @@ def test_process_document_success(monkeypatch):
 
     monkeypatch.setattr(chunk_service, "SessionLocal", lambda: mock_db)
     monkeypatch.setattr(
-        chunk_service, "chunk_text",
-        lambda text: ["chunk one", "chunk two"]
+        chunk_service,
+        "structure_document_pages",
+        lambda pages: [
+            SimpleNamespace(
+                section_heading="Summary",
+                text="chunk one",
+                page_number=1,
+            ),
+            SimpleNamespace(
+                section_heading=None,
+                text="chunk two",
+                page_number=2,
+            ),
+        ],
     )
+    embedding_inputs = []
     monkeypatch.setattr(
         chunk_service, "create_embedding",
-        lambda chunk: [0.1, 0.2, 0.3]
+        lambda text: embedding_inputs.append(text) or [0.1, 0.2, 0.3]
     )
 
     result = chunk_service.process_document(1, "sample text")
 
     assert result == 2
     assert mock_db.add.call_count == 2
+    assert embedding_inputs == ["Summary\nchunk one", "chunk two"]
+    assert mock_db.add.call_args_list[0].args[0].page_number == 1
+    assert mock_db.add.call_args_list[0].args[0].section_heading == "Summary"
     mock_db.commit.assert_called_once()
     mock_db.close.assert_called_once()
 
@@ -49,8 +66,15 @@ def test_process_document_rolls_back_when_embedding_fails(monkeypatch):
 
     monkeypatch.setattr(chunk_service, "SessionLocal", lambda: mock_db)
     monkeypatch.setattr(
-        chunk_service, "chunk_text",
-        lambda text: ["chunk one"]
+        chunk_service,
+        "structure_document_pages",
+        lambda pages: [
+            SimpleNamespace(
+                section_heading=None,
+                text="chunk one",
+                page_number=None,
+            )
+        ],
     )
 
     def fail_embedding(chunk):
@@ -71,8 +95,15 @@ def test_process_document_rolls_back_when_commit_fails(monkeypatch):
 
     monkeypatch.setattr(chunk_service, "SessionLocal", lambda: mock_db)
     monkeypatch.setattr(
-        chunk_service, "chunk_text",
-        lambda text: ["chunk one"]
+        chunk_service,
+        "structure_document_pages",
+        lambda pages: [
+            SimpleNamespace(
+                section_heading=None,
+                text="chunk one",
+                page_number=None,
+            )
+        ],
     )
     monkeypatch.setattr(
         chunk_service, "create_embedding",

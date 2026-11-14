@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Literal
 
@@ -7,11 +8,13 @@ from sqlalchemy.orm import Session
 
 from app.database.connection import SessionLocal
 from app.database.models import Document, DocumentChunk
-from app.rag.loader import extract_text_from_pdf, validate_extracted_text
+from app.rag.loader import extract_pages_from_pdf, validate_extracted_pages
 from app.services.chunk_service import process_document
 from app.api.dependencies import get_current_user, get_db
 from app.database.models import User
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 upload_dir = Path("uploads")
@@ -117,8 +120,8 @@ def upload_document(
 
         # Extract and validate text before creating a DB record
         try:
-            text = extract_text_from_pdf(str(file_path))
-            text = validate_extracted_text(text)
+            pages = extract_pages_from_pdf(str(file_path))
+            pages = validate_extracted_pages(pages)
         except ValueError as error:
             raise HTTPException(
                 status_code=400,
@@ -136,7 +139,7 @@ def upload_document(
         db.refresh(document)
 
         # Create chunks and embeddings
-        process_document(document.id, text)
+        process_document(document.id, pages)
 
         return {
             "message": "Document uploaded and processed successfully",
@@ -170,10 +173,19 @@ def upload_document(
                 db.commit()
             except Exception:
                 db.rollback()
+                logger.exception(
+                    "Failed to clean up document %s after processing failure",
+                    document.id,
+                )
 
         if file_path.exists():
             file_path.unlink()
 
+        logger.exception(
+            "Could not upload and process document for user %s (document_id=%s)",
+            current_user.id,
+            document.id if document is not None else None,
+        )
         raise HTTPException(
             status_code=500,
             detail="Could not upload and process the document."

@@ -17,7 +17,7 @@ def get_client() -> Client:
 def generate_answer(question: str, context: str) -> str:
     try:
         response = get_client().chat(
-            model=os.getenv("OLLAMA_CHAT_MODEL", "llama3.2:1b"),
+            model=os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:0.5b"),
             messages=[
                 {
                     "role": "system",

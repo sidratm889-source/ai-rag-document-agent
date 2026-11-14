@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from datetime import datetime
 from fastapi import HTTPException
 from unittest.mock import MagicMock, patch
-from types import SimpleNamespace
+from ollama import ResponseError
 from fastapi.testclient import TestClient
 from app.main import app
 from app.api import auth as auth_api
@@ -157,8 +157,8 @@ from unittest.mock import patch
 
 def test_chat_returns_answer(authenticated_api):
     with patch(
-        "app.api.chat.retrieve_relevant_chunks",
-        return_value=[]
+        "app.api.chat.answer_document_question",
+        return_value="I couldn't find relevant information in the uploaded documents.",
     ), patch(
         "app.api.chat.create_conversation",
         return_value="new-chat-conversation",
@@ -215,7 +215,10 @@ def test_regular_chat_continues_owned_conversation(authenticated_api):
     ))
     db.commit()
 
-    with patch("app.api.chat.retrieve_relevant_chunks", return_value=[]), patch(
+    with patch(
+        "app.api.chat.answer_document_question",
+        return_value="Follow-up source text.",
+    ), patch(
         "app.api.chat.create_conversation",
     ) as create_chat_conversation:
         response = api_client.post(
@@ -239,10 +242,7 @@ def test_regular_chat_history_is_available_to_agent_chat(authenticated_api):
     agent_session_factory = sessionmaker(bind=db.get_bind())
 
     with patch(
-        "app.api.chat.retrieve_relevant_chunks",
-        return_value=[SimpleNamespace(chunk_text="2 + 3 = 5")],
-    ), patch(
-        "app.api.chat.generate_answer",
+        "app.api.chat.answer_document_question",
         return_value="The sum of 2 and 3 is 5.",
     ), patch(
         "app.agent.agent.SessionLocal",
@@ -282,7 +282,7 @@ def test_regular_chat_rejects_another_users_conversation(authenticated_api):
     ))
     db.commit()
 
-    with patch("app.api.chat.retrieve_relevant_chunks") as retrieve_chunks:
+    with patch("app.api.chat.answer_document_question") as answer_document:
         response = api_client.post(
             "/chat/",
             json={
@@ -293,7 +293,7 @@ def test_regular_chat_rejects_another_users_conversation(authenticated_api):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Conversation not found."
-    retrieve_chunks.assert_not_called()
+    answer_document.assert_not_called()
 
 
 def test_agent_chat_creates_and_continues_conversation(authenticated_api):
@@ -303,7 +303,10 @@ def test_agent_chat_creates_and_continues_conversation(authenticated_api):
     with patch("app.agent.agent.ensure_conversation_schema"), patch(
         "app.agent.agent.SessionLocal",
         return_value=db,
-    ), patch("app.api.chat.run_agent", side_effect=answers) as run_agent:
+    ), patch(
+        "app.api.chat.run_source_only_document_query",
+        side_effect=answers,
+    ) as run_document_query:
         first_response = api_client.post(
             "/chat/agent",
             json={"question": "First question"},
@@ -335,31 +338,88 @@ def test_agent_chat_creates_and_continues_conversation(authenticated_api):
 
     assert follow_up_response.status_code == 200
     assert follow_up_response.json()["conversation_id"] == conversation_id
-    assert run_agent.call_count == 2
-    assert run_agent.call_args_list[0].kwargs["conversation_id"] == conversation_id
-    assert run_agent.call_args_list[1].kwargs["conversation_id"] == conversation_id
-    assert all(call.kwargs["user_id"] == 1 for call in run_agent.call_args_list)
+    assert run_document_query.call_count == 2
+    assert run_document_query.call_args_list[0].kwargs["conversation_id"] == conversation_id
+    assert run_document_query.call_args_list[1].kwargs["conversation_id"] == conversation_id
+    assert all(call.kwargs["user_id"] == 1 for call in run_document_query.call_args_list)
+
+
+def test_agent_chat_uses_source_only_path_for_skills_questions(authenticated_api):
+    api_client, _ = authenticated_api
+    expected_answer = (
+        "Source: resume.pdf\n"
+        "SKILLS\nFRONTEND: Next.js, React.js\nBACKEND: FastAPI"
+    )
+    question = "What skills are listed in my uploaded PDF?"
+
+    with patch(
+        "app.api.chat.create_conversation",
+        return_value="skills-conversation",
+    ), patch(
+        "app.api.chat.run_source_only_document_query",
+        return_value=expected_answer,
+    ) as source_query, patch(
+        "app.api.chat.run_agent",
+    ) as run_agent:
+        response = api_client.post(
+            "/chat/agent",
+            json={"question": question},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == expected_answer
+    source_query.assert_called_once_with(
+        question=question,
+        conversation_id="skills-conversation",
+        user_id=1,
+    )
+    run_agent.assert_not_called()
+
+
+def test_agent_chat_passes_selected_document_to_source_query(authenticated_api):
+    with patch(
+        "app.api.chat.create_conversation",
+        return_value="selected-document-conversation",
+    ), patch(
+        "app.api.chat.run_source_only_document_query",
+        return_value="Source: report.pdf, page 2\nRevenue was $120,000.",
+    ) as source_query:
+        response = authenticated_api[0].post(
+            "/chat/agent",
+            json={
+                "question": "What revenue was reported?",
+                "document_id": 41,
+            },
+        )
+
+    assert response.status_code == 200
+    source_query.assert_called_once_with(
+        question="What revenue was reported?",
+        conversation_id="selected-document-conversation",
+        user_id=1,
+        document_id=41,
+    )
+
+
+def test_agent_chat_rejects_nonpositive_document_id(authenticated_api):
+    response = authenticated_api[0].post(
+        "/chat/agent",
+        json={"question": "What is the total?", "document_id": 0},
+    )
+
+    assert response.status_code == 422
 
 
 def test_agent_chat_returns_previous_user_message(authenticated_api):
     api_client, db = authenticated_api
     agent_session_factory = sessionmaker(bind=db.get_bind())
-    fake_client = MagicMock()
-    fake_client.chat.side_effect = [
-        SimpleNamespace(
-            message=SimpleNamespace(content="Understood.", tool_calls=[])
-        ),
-        SimpleNamespace(
-            message=SimpleNamespace(content="Noted.", tool_calls=[])
-        ),
-    ]
 
     with patch("app.agent.agent.ensure_conversation_schema"), patch(
         "app.agent.agent.SessionLocal",
         agent_session_factory,
     ), patch(
-        "app.agent.agent.get_client",
-        return_value=fake_client,
+        "app.agent.agent.answer_document_question",
+        side_effect=["Understood.", "Noted."],
     ):
         first_response = api_client.post(
             "/chat/agent",
@@ -408,7 +468,7 @@ def test_agent_chat_returns_previous_user_message(authenticated_api):
     assert empty_conversation_response.json()["answer"] == (
         "You have not asked a previous question in this conversation."
     )
-    assert fake_client.chat.call_count == 2
+    assert db.query(ConversationMessage).count() >= 4
 
 
 def test_agent_chat_allows_conversation_owned_by_current_user(authenticated_api):
@@ -427,7 +487,7 @@ def test_agent_chat_allows_conversation_owned_by_current_user(authenticated_api)
         response = api_client.post(
             "/chat/agent",
             json={
-                "question": "Continue",
+                "question": "How many documents do I have?",
                 "conversation_id": "owned-conversation",
             },
         )
@@ -435,7 +495,7 @@ def test_agent_chat_allows_conversation_owned_by_current_user(authenticated_api)
     assert response.status_code == 200
     assert response.json()["conversation_id"] == "owned-conversation"
     run_agent.assert_called_once_with(
-        question="Continue",
+        question="How many documents do I have?",
         conversation_id="owned-conversation",
         user_id=1,
     )
@@ -485,7 +545,7 @@ def test_agent_chat_returns_safe_error_when_database_fails(authenticated_api):
         response = api_client.post(
             "/chat/agent",
             json={
-                "question": "Continue",
+                "question": "How many documents do I have?",
                 "conversation_id": "existing-conversation",
             },
         )
@@ -515,6 +575,26 @@ def test_agent_chat_returns_safe_error_when_saving_conversation_fails(
         "Conversation service is temporarily unavailable."
     )
     assert "database detail" not in response.text
+
+
+def test_agent_chat_returns_actionable_error_when_ollama_lacks_memory(
+    authenticated_api,
+):
+    with patch(
+        "app.api.chat.run_agent",
+        side_effect=ResponseError(
+            "llama-server process has terminated: "
+            "error loading model: unable to allocate CPU buffer",
+            status_code=500,
+        ),
+    ):
+        response = authenticated_api[0].post(
+            "/chat/agent",
+            json={"question": "How many documents do I have?"},
+        )
+
+    assert response.status_code == 503
+    assert "not have enough available memory" in response.json()["detail"]
 
 
 def test_upload_rejects_non_pdf(authenticated_api):
@@ -608,8 +688,16 @@ def test_upload_valid_pdf_success(authenticated_api, monkeypatch, tmp_path):
 
     fake_db = FakeDB()
     monkeypatch.setattr(documents, "SessionLocal", lambda: fake_db)
-    monkeypatch.setattr(documents, "extract_text_from_pdf", lambda path: "Restaurant opening hours")
-    monkeypatch.setattr(documents, "validate_extracted_text", lambda text: text)
+    monkeypatch.setattr(
+        documents,
+        "extract_pages_from_pdf",
+        lambda path: "Restaurant opening hours",
+    )
+    monkeypatch.setattr(
+        documents,
+        "validate_extracted_pages",
+        lambda pages: pages,
+    )
     monkeypatch.setattr(documents, "process_document", lambda document_id, text: None)
 
     # Make Document(...) return our fake object
@@ -641,7 +729,7 @@ def test_upload_rejects_pdf_when_text_extraction_fails(
     monkeypatch.setattr(documents, "upload_dir", tmp_path)
     monkeypatch.setattr(
         documents,
-        "extract_text_from_pdf",
+        "extract_pages_from_pdf",
         lambda path: (_ for _ in ()).throw(
             ValueError("Could not extract PDF text")
         ),
@@ -713,10 +801,10 @@ def test_upload_cleans_up_when_processing_fails(
         documents, "Document", lambda **kwargs: fake_document
     )
     monkeypatch.setattr(
-        documents, "extract_text_from_pdf", lambda path: "Some text"
+        documents, "extract_pages_from_pdf", lambda path: "Some text"
     )
     monkeypatch.setattr(
-        documents, "validate_extracted_text", lambda text: text
+        documents, "validate_extracted_pages", lambda pages: pages
     )
     monkeypatch.setattr(
         documents,
@@ -979,8 +1067,8 @@ def test_regular_chat_accepts_explicit_null_conversation_id(authenticated_api):
         "app.api.chat.create_conversation",
         return_value="new-conversation",
     ) as create_chat_conversation, patch(
-        "app.api.chat.retrieve_relevant_chunks",
-        return_value=[],
+        "app.api.chat.answer_document_question",
+        return_value="No matching source text.",
     ):
         response = api_client.post(
             "/chat/",
@@ -1004,14 +1092,17 @@ def test_agent_chat_accepts_explicit_null_conversation_id(authenticated_api):
     ) as run_agent:
         response = api_client.post(
             "/chat/agent",
-            json={"question": "Hello", "conversation_id": None},
+            json={
+                "question": "How many documents do I have?",
+                "conversation_id": None,
+            },
         )
 
     assert response.status_code == 200
     assert response.json()["conversation_id"] == "new-conversation"
     create_chat_conversation.assert_called_once_with(1)
     run_agent.assert_called_once_with(
-        question="Hello",
+        question="How many documents do I have?",
         conversation_id="new-conversation",
         user_id=1,
     )
@@ -1088,8 +1179,8 @@ def test_regular_chat_rolls_back_when_saving_messages_fails(
     api_client, db = authenticated_api
 
     with patch(
-        "app.api.chat.retrieve_relevant_chunks",
-        return_value=[],
+        "app.api.chat.answer_document_question",
+        return_value="No matching source text.",
     ), patch.object(
         db,
         "commit",
@@ -1105,23 +1196,18 @@ def test_regular_chat_rolls_back_when_saving_messages_fails(
         "Conversation service is temporarily unavailable."
     )
     mock_rollback.assert_called_once()
-def test_regular_chat_generates_answer_from_relevant_chunks(authenticated_api):
+def test_regular_chat_returns_source_text_without_generating_answer(authenticated_api):
     api_client, _ = authenticated_api
-
-    chunks = [
-        SimpleNamespace(chunk_text="The restaurant opens at 9 AM."),
-        SimpleNamespace(chunk_text="The restaurant closes at 10 PM."),
-    ]
 
     with patch(
         "app.api.chat.create_conversation",
         return_value="test-conversation",
     ), patch(
-        "app.api.chat.retrieve_relevant_chunks",
-        return_value=chunks,
+        "app.api.chat.answer_document_question",
+        return_value="Source: restaurant.pdf\nThe restaurant opens at 9 AM.",
     ), patch(
         "app.api.chat.generate_answer",
-        return_value="The restaurant opens at 9 AM.",
+        create=True,
     ) as mock_generate:
         response = api_client.post(
             "/chat/",
@@ -1129,11 +1215,10 @@ def test_regular_chat_generates_answer_from_relevant_chunks(authenticated_api):
         )
 
     assert response.status_code == 200
-    assert response.json()["answer"] == "The restaurant opens at 9 AM."
-    mock_generate.assert_called_once_with(
-        "When does the restaurant open?",
-        "The restaurant opens at 9 AM.\n\nThe restaurant closes at 10 PM.",
+    assert response.json()["answer"] == (
+        "Source: restaurant.pdf\nThe restaurant opens at 9 AM."
     )
+    mock_generate.assert_not_called()
 
 
 def test_regular_chat_returns_404_for_missing_conversation(authenticated_api):
@@ -1178,8 +1263,8 @@ def test_upload_http_exception_deletes_created_document(
 
     with patch("app.api.documents.upload_dir", tmp_path), \
          patch("app.api.documents.SessionLocal", return_value=fake_db), \
-         patch("app.api.documents.extract_text_from_pdf", return_value="valid text"), \
-         patch("app.api.documents.validate_extracted_text", return_value="valid text"), \
+         patch("app.api.documents.extract_pages_from_pdf", return_value="valid text"), \
+         patch("app.api.documents.validate_extracted_pages", return_value="valid text"), \
          patch("app.api.documents.Document", return_value=fake_document), \
          patch(
              "app.api.documents.process_document",
@@ -1216,8 +1301,8 @@ def test_upload_rolls_back_if_document_cleanup_fails(
 
     with patch("app.api.documents.upload_dir", tmp_path), \
          patch("app.api.documents.SessionLocal", return_value=fake_db), \
-         patch("app.api.documents.extract_text_from_pdf", return_value="valid text"), \
-         patch("app.api.documents.validate_extracted_text", return_value="valid text"), \
+         patch("app.api.documents.extract_pages_from_pdf", return_value="valid text"), \
+         patch("app.api.documents.validate_extracted_pages", return_value="valid text"), \
          patch("app.api.documents.Document", return_value=fake_document), \
          patch(
              "app.api.documents.process_document",
@@ -1267,8 +1352,8 @@ def test_upload_http_exception_when_file_already_missing(
 
     with patch("app.api.documents.upload_dir", tmp_path), \
          patch("app.api.documents.SessionLocal", return_value=fake_db), \
-         patch("app.api.documents.extract_text_from_pdf", return_value="valid text"), \
-         patch("app.api.documents.validate_extracted_text", return_value="valid text"), \
+         patch("app.api.documents.extract_pages_from_pdf", return_value="valid text"), \
+         patch("app.api.documents.validate_extracted_pages", return_value="valid text"), \
          patch("app.api.documents.Document", return_value=fake_document), \
          patch(
              "app.api.documents.process_document",
@@ -1312,7 +1397,7 @@ def test_upload_general_exception_when_document_and_file_missing(
 
     monkeypatch.setattr(
         documents,
-        "extract_text_from_pdf",
+        "extract_pages_from_pdf",
         delete_file_then_raise
     )
 

@@ -1,0 +1,425 @@
+[1mdiff --git a/backend/app/api/documents.py b/backend/app/api/documents.py[m
+[1mindex 7d49843..77e2a06 100644[m
+[1m--- a/backend/app/api/documents.py[m
+[1m+++ b/backend/app/api/documents.py[m
+[36m@@ -1,15 +1,16 @@[m
+ import uuid[m
+[32m+[m[32mfrom typing import Literal[m
+ [m
+[31m-from fastapi import APIRouter, File, HTTPException, UploadFile[m
+[32m+[m[32mfrom fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile[m
+ from pathlib import Path[m
+[32m+[m[32mfrom sqlalchemy.orm import Session[m
+ [m
+ from app.database.connection import SessionLocal[m
+ from app.database.models import Document, DocumentChunk[m
+ from app.rag.loader import extract_text_from_pdf, validate_extracted_text[m
+ from app.services.chunk_service import process_document[m
+[31m-from app.api.dependencies import get_current_user[m
+[32m+[m[32mfrom app.api.dependencies import get_current_user, get_db[m
+ from app.database.models import User[m
+[31m-from fastapi import Depends[m
+ [m
+ [m
+ router = APIRouter(prefix="/documents", tags=["documents"])[m
+[36m@@ -23,6 +24,50 @@[m [mupload_dir.mkdir(exist_ok=True)[m
+ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB[m
+ [m
+ [m
+[32m+[m[32m@router.get("")[m
+[32m+[m[32mdef list_documents([m
+[32m+[m[32m    page: int = Query(default=1, ge=1),[m
+[32m+[m[32m    page_size: int = Query(default=20, ge=1, le=100),[m
+[32m+[m[32m    search: str | None = Query(default=None, max_length=255),[m
+[32m+[m[32m    sort: Literal["uploaded_at"] = Query(default="uploaded_at"),[m
+[32m+[m[32m    order: Literal["asc", "desc"] = Query(default="desc"),[m
+[32m+[m[32m    current_user: User = Depends(get_current_user),[m
+[32m+[m[32m    db: Session = Depends(get_db),[m
+[32m+[m[32m):[m
+[32m+[m[32m    query = db.query(Document).filter(Document.user_id == current_user.id)[m
+[32m+[m
+[32m+[m[32m    search_term = search.strip() if search else ""[m
+[32m+[m[32m    if search_term:[m
+[32m+[m[32m        query = query.filter(Document.filename.ilike(f"%{search_term}%"))[m
+[32m+[m
+[32m+[m[32m    total = query.count()[m
+[32m+[m[32m    date_order = ([m
+[32m+[m[32m        Document.uploaded_at.desc().nullslast()[m
+[32m+[m[32m        if order == "desc"[m
+[32m+[m[32m        else Document.uploaded_at.asc().nullslast()[m
+[32m+[m[32m    )[m
+[32m+[m[32m    id_order = Document.id.desc() if order == "desc" else Document.id.asc()[m
+[32m+[m[32m    documents = ([m
+[32m+[m[32m        query.order_by(date_order, id_order)[m
+[32m+[m[32m        .offset((page - 1) * page_size)[m
+[32m+[m[32m        .limit(page_size)[m
+[32m+[m[32m        .all()[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    return {[m
+[32m+[m[32m        "items": [[m
+[32m+[m[32m            {[m
+[32m+[m[32m                "id": document.id,[m
+[32m+[m[32m                "filename": document.filename,[m
+[32m+[m[32m                "uploaded_at": document.uploaded_at,[m
+[32m+[m[32m            }[m
+[32m+[m[32m            for document in documents[m
+[32m+[m[32m        ],[m
+[32m+[m[32m        "page": page,[m
+[32m+[m[32m        "page_size": page_size,[m
+[32m+[m[32m        "total": total,[m
+[32m+[m[32m        "total_pages": (total + page_size - 1) // page_size,[m
+[32m+[m[32m    }[m
+ [m
+ [m
+ @router.post("/upload")[m
+[1mdiff --git a/backend/test_api.py b/backend/test_api.py[m
+[1mindex 2c74b5d..89ddaa8 100644[m
+[1m--- a/backend/test_api.py[m
+[1m+++ b/backend/test_api.py[m
+[36m@@ -1,5 +1,6 @@[m
+ [m
+ from types import SimpleNamespace[m
+[32m+[m[32mfrom datetime import datetime[m
+ from fastapi import HTTPException[m
+ from unittest.mock import MagicMock, patch[m
+ from types import SimpleNamespace[m
+[36m@@ -7,7 +8,12 @@[m [mfrom fastapi.testclient import TestClient[m
+ from app.main import app[m
+ from app.api import auth as auth_api[m
+ from app.api.dependencies import get_current_user, get_db[m
+[31m-from app.database.models import AuditLog, Conversation, ConversationMessage[m
+[32m+[m[32mfrom app.database.models import ([m
+[32m+[m[32m    AuditLog,[m
+[32m+[m[32m    Conversation,[m
+[32m+[m[32m    ConversationMessage,[m
+[32m+[m[32m    Document,[m
+[32m+[m[32m)[m
+ from io import BytesIO[m
+ import pytest[m
+ from sqlalchemy import create_engine[m
+[36m@@ -25,6 +31,7 @@[m [mdef authenticated_api():[m
+         connect_args={"check_same_thread": False},[m
+         poolclass=StaticPool,[m
+     )[m
+[32m+[m[32m    Document.__table__.create(bind=engine)[m
+     Conversation.__table__.create(bind=engine)[m
+     ConversationMessage.__table__.create(bind=engine)[m
+     AuditLog.__table__.create(bind=engine)[m
+[36m@@ -43,6 +50,94 @@[m [mdef authenticated_api():[m
+         engine.dispose()[m
+ [m
+ [m
+[32m+[m[32mdef test_document_list_searches_paginates_and_scopes_to_current_user([m
+[32m+[m[32m    authenticated_api,[m
+[32m+[m[32m):[m
+[32m+[m[32m    api_client, db = authenticated_api[m
+[32m+[m[32m    db.add_all([[m
+[32m+[m[32m        Document([m
+[32m+[m[32m            filename="Annual Report.pdf",[m
+[32m+[m[32m            file_path="private/annual.pdf",[m
+[32m+[m[32m            uploaded_at=datetime(2026, 1, 1),[m
+[32m+[m[32m            user_id=1,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        Document([m
+[32m+[m[32m            filename="Quarterly report.pdf",[m
+[32m+[m[32m            file_path="private/quarterly.pdf",[m
+[32m+[m[32m            uploaded_at=datetime(2026, 1, 3),[m
+[32m+[m[32m            user_id=1,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        Document([m
+[32m+[m[32m            filename="Report notes.pdf",[m
+[32m+[m[32m            file_path="private/notes.pdf",[m
+[32m+[m[32m            uploaded_at=datetime(2026, 1, 2),[m
+[32m+[m[32m            user_id=1,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        Document([m
+[32m+[m[32m            filename="Other user's report.pdf",[m
+[32m+[m[32m            file_path="private/other.pdf",[m
+[32m+[m[32m            uploaded_at=datetime(2026, 1, 4),[m
+[32m+[m[32m            user_id=2,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m        Document([m
+[32m+[m[32m            filename="Unowned report.pdf",[m
+[32m+[m[32m            file_path="private/unowned.pdf",[m
+[32m+[m[32m            uploaded_at=datetime(2026, 1, 5),[m
+[32m+[m[32m            user_id=None,[m
+[32m+[m[32m        ),[m
+[32m+[m[32m    ])[m
+[32m+[m[32m    db.commit()[m
+[32m+[m
+[32m+[m[32m    first_page = api_client.get([m
+[32m+[m[32m        "/documents",[m
+[32m+[m[32m        params={[m
+[32m+[m[32m            "page": 1,[m
+[32m+[m[32m            "page_size": 2,[m
+[32m+[m[32m            "search": "REPORT",[m
+[32m+[m[32m            "sort": "uploaded_at",[m
+[32m+[m[32m            "order": "desc",[m
+[32m+[m[32m        },[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    assert first_page.status_code == 200[m
+[32m+[m[32m    first_body = first_page.json()[m
+[32m+[m[32m    assert first_body["page"] == 1[m
+[32m+[m[32m    assert first_body["page_size"] == 2[m
+[32m+[m[32m    assert first_body["total"] == 3[m
+[32m+[m[32m    assert first_body["total_pages"] == 2[m
+[32m+[m[32m    assert [item["filename"] for item in first_body["items"]] == [[m
+[32m+[m[32m        "Quarterly report.pdf",[m
+[32m+[m[32m        "Report notes.pdf",[m
+[32m+[m[32m    ][m
+[32m+[m[32m    assert "file_path" not in first_body["items"][0][m
+[32m+[m
+[32m+[m[32m    second_page = api_client.get([m
+[32m+[m[32m        "/documents",[m
+[32m+[m[32m        params={[m
+[32m+[m[32m            "page": 2,[m
+[32m+[m[32m            "page_size": 2,[m
+[32m+[m[32m            "search": "report",[m
+[32m+[m[32m            "order": "desc",[m
+[32m+[m[32m        },[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    assert second_page.status_code == 200[m
+[32m+[m[32m    assert [item["filename"] for item in second_page.json()["items"]] == [[m
+[32m+[m[32m        "Annual Report.pdf",[m
+[32m+[m[32m    ][m
+[32m+[m
+[32m+[m[32m    ascending = api_client.get([m
+[32m+[m[32m        "/documents",[m
+[32m+[m[32m        params={"search": "report", "order": "asc"},[m
+[32m+[m[32m    )[m
+[32m+[m[32m    assert ascending.status_code == 200[m
+[32m+[m[32m    assert [item["filename"] for item in ascending.json()["items"]] == [[m
+[32m+[m[32m        "Annual Report.pdf",[m
+[32m+[m[32m        "Report notes.pdf",[m
+[32m+[m[32m        "Quarterly report.pdf",[m
+[32m+[m[32m    ][m
+[32m+[m
+[32m+[m
+ def test_health_endpoint():[m
+     response = client.get("/health")[m
+ [m
+[1mdiff --git a/frontend/app/dashboard-client.tsx b/frontend/app/dashboard-client.tsx[m
+[1mindex 710043b..d93ee42 100644[m
+[1m--- a/frontend/app/dashboard-client.tsx[m
+[1m+++ b/frontend/app/dashboard-client.tsx[m
+[36m@@ -1,13 +1,28 @@[m
+ "use client";[m
+ [m
+ import { useRouter } from "next/navigation";[m
+[31m-import { useState } from "react";[m
+[32m+[m[32mimport { FormEvent, useEffect, useState } from "react";[m
+ [m
+ type ChatMessage = {[m
+   role: "user" | "assistant";[m
+   content: string;[m
+ };[m
+ [m
+[32m+[m[32mtype ListedDocument = {[m
+[32m+[m[32m  id: number;[m
+[32m+[m[32m  filename: string;[m
+[32m+[m[32m  uploaded_at: string | null;[m
+[32m+[m[32m};[m
+[32m+[m
+[32m+[m[32mtype DocumentListResponse = {[m
+[32m+[m[32m  items: ListedDocument[];[m
+[32m+[m[32m  page: number;[m
+[32m+[m[32m  page_size: number;[m
+[32m+[m[32m  total: number;[m
+[32m+[m[32m  total_pages: number;[m
+[32m+[m[32m  detail?: string;[m
+[32m+[m[32m};[m
+[32m+[m
+ type DashboardClientProps = {[m
+   userEmail: string;[m
+ };[m
+[36m@@ -27,6 +42,59 @@[m [mexport default function DashboardClient({ userEmail }: DashboardClientProps) {[m
+   const [isAsking, setIsAsking] = useState(false);[m
+   const [errorMessage, setErrorMessage] = useState("");[m
+   const [isLoggingOut, setIsLoggingOut] = useState(false);[m
+[32m+[m[32m  const [documents, setDocuments] = useState<ListedDocument[]>([]);[m
+[32m+[m[32m  const [documentSearchInput, setDocumentSearchInput] = useState("");[m
+[32m+[m[32m  const [documentSearch, setDocumentSearch] = useState("");[m
+[32m+[m[32m  const [documentPage, setDocumentPage] = useState(1);[m
+[32m+[m[32m  const [documentOrder, setDocumentOrder] = useState<"asc" | "desc">("desc");[m
+[32m+[m[32m  const [documentTotal, setDocumentTotal] = useState(0);[m
+[32m+[m[32m  const [documentTotalPages, setDocumentTotalPages] = useState(0);[m
+[32m+[m[32m  const [isLoadingDocuments, setIsLoadingDocuments] = useState(true);[m
+[32m+[m[32m  const [documentError, setDocumentError] = useState("");[m
+[32m+[m[32m  const [documentRefreshKey, setDocumentRefreshKey] = useState(0);[m
+[32m+[m
+[32m+[m[32m  useEffect(() => {[m
+[32m+[m[32m    const controller = new AbortController();[m
+[32m+[m[32m    const params = new URLSearchParams({[m
+[32m+[m[32m      page: String(documentPage),[m
+[32m+[m[32m      page_size: "10",[m
+[32m+[m[32m      search: documentSearch,[m
+[32m+[m[32m      sort: "uploaded_at",[m
+[32m+[m[32m      order: documentOrder,[m
+[32m+[m[32m    });[m
+[32m+[m
+[32m+[m[32m    async function loadDocuments() {[m
+[32m+[m[32m      setIsLoadingDocuments(true);[m
+[32m+[m[32m      setDocumentError("");[m
+[32m+[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        const response = await fetch(`/api/documents?${params.toString()}`, {[m
+[32m+[m[32m          signal: controller.signal,[m
+[32m+[m[32m        });[m
+[32m+[m[32m        const data = (await response.json()) as DocumentListResponse;[m
+[32m+[m
+[32m+[m[32m        if (!response.ok) {[m
+[32m+[m[32m          throw new Error(data.detail ?? "Could not load documents.");[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        setDocuments(data.items);[m
+[32m+[m[32m        setDocumentTotal(data.total);[m
+[32m+[m[32m        setDocumentTotalPages(data.total_pages);[m
+[32m+[m[32m      } catch (error) {[m
+[32m+[m[32m        if (error instanceof Error && error.name === "AbortError") return;[m
+[32m+[m[32m        setDocumentError([m
+[32m+[m[32m          error instanceof Error ? error.message : "Could not load documents.",[m
+[32m+[m[32m        );[m
+[32m+[m[32m      } finally {[m
+[32m+[m[32m        if (!controller.signal.aborted) {[m
+[32m+[m[32m          setIsLoadingDocuments(false);[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    void loadDocuments();[m
+[32m+[m[32m    return () => controller.abort();[m
+[32m+[m[32m  }, [documentOrder, documentPage, documentRefreshKey, documentSearch]);[m
+ [m
+   async function handleLogout() {[m
+     setIsLoggingOut(true);[m
+[36m@@ -124,6 +192,8 @@[m [mexport default function DashboardClient({ userEmail }: DashboardClientProps) {[m
+                 setUploadMessage([m
+                   `Uploaded successfully: ${data.filename} (ID: ${data.document_id})`,[m
+                 );[m
+[32m+[m[32m                setDocumentPage(1);[m
+[32m+[m[32m                setDocumentRefreshKey((key) => key + 1);[m
+               } catch (error) {[m
+                 setUploadMessage([m
+                   error instanceof Error ? error.message : "Upload failed.",[m
+[36m@@ -278,6 +348,118 @@[m [mexport default function DashboardClient({ userEmail }: DashboardClientProps) {[m
+             </button>[m
+           </form>[m
+         </section>[m
+[32m+[m
+[32m+[m[32m        <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 md:col-span-3">[m
+[32m+[m[32m          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">[m
+[32m+[m[32m            <div>[m
+[32m+[m[32m              <h2 className="text-lg font-semibold">Document library</h2>[m
+[32m+[m[32m              <p className="mt-1 text-sm text-slate-400">[m
+[32m+[m[32m                {documentTotal} {documentTotal === 1 ? "document" : "documents"}[m
+[32m+[m[32m              </p>[m
+[32m+[m[32m            </div>[m
+[32m+[m[32m            <button[m
+[32m+[m[32m              type="button"[m
+[32m+[m[32m              onClick={() => {[m
+[32m+[m[32m                setDocumentPage(1);[m
+[32m+[m[32m                setDocumentOrder((order) => order === "desc" ? "asc" : "desc");[m
+[32m+[m[32m              }}[m
+[32m+[m[32m              className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 transition hover:bg-slate-800"[m
+[32m+[m[32m            >[m
+[32m+[m[32m              Upload date: {documentOrder === "desc" ? "Newest first" : "Oldest first"}[m
+[32m+[m[32m            </button>[m
+[32m+[m[32m          </div>[m
+[32m+[m
+[32m+[m[32m          <form[m
+[32m+[m[32m            className="mt-4 flex flex-col gap-3 sm:flex-row"[m
+[32m+[m[32m            onSubmit={(event: FormEvent<HTMLFormElement>) => {[m
+[32m+[m[32m              event.preventDefault();[m
+[32m+[m[32m              setDocumentPage(1);[m
+[32m+[m[32m              setDocumentSearch(documentSearchInput.trim());[m
+[32m+[m[32m              setDocumentRefreshKey((key) => key + 1);[m
+[32m+[m[32m            }}[m
+[32m+[m[32m          >[m
+[32m+[m[32m            <input[m
+[32m+[m[32m              value={documentSearchInput}[m
+[32m+[m[32m              onChange={(event) => setDocumentSearchInput(event.target.value)}[m
+[32m+[m[32m              placeholder="Search filenames..."[m
+[32m+[m[32m              aria-label="Search document filenames"[m
+[32m+[m[32m              className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm outline-none focus:border-blue-500"[m
+[32m+[m[32m            />[m
+[32m+[m[32m            <button[m
+[32m+[m[32m              type="submit"[m
+[32m+[m[32m              className="rounded-lg bg-blue-600 px-5 py-3 text-sm font-medium hover:bg-blue-500"[m
+[32m+[m[32m            >[m
+[32m+[m[32m              Search[m
+[32m+[m[32m            </button>[m
+[32m+[m[32m          </form>[m
+[32m+[m
+[32m+[m[32m          {documentError && ([m
+[32m+[m[32m            <p role="alert" className="mt-4 text-sm text-red-400">[m
+[32m+[m[32m              {documentError}[m
+[32m+[m[32m            </p>[m
+[32m+[m[32m          )}[m
+[32m+[m
+[32m+[m[32m          <div className="mt-4 overflow-x-auto">[m
+[32m+[m[32m            {isLoadingDocuments ? ([m
+[32m+[m[32m              <p className="py-8 text-center text-sm text-slate-400">[m
+[32m+[m[32m                Loading documents...[m
+[32m+[m[32m              </p>[m
+[32m+[m[32m            ) : documents.length === 0 ? ([m
+[32m+[m[32m              <p className="py-8 text-center text-sm text-slate-400">[m
+[32m+[m[32m                {documentSearch[m
+[32m+[m[32m                  ? "No documents match that filename."[m
+[32m+[m[32m                  : "No documents uploaded yet."}[m
+[32m+[m[32m              </p>[m
+[32m+[m[32m            ) : ([m
+[32m+[m[32m              <table className="w-full min-w-96 text-left text-sm">[m
+[32m+[m[32m                <thead className="border-b border-slate-800 text-xs uppercase text-slate-500">[m
+[32m+[m[32m                  <tr>[m
+[32m+[m[32m                    <th scope="col" className="px-3 py-3 font-medium">Filename</th>[m
+[32m+[m[32m                    <th scope="col" className="px-3 py-3 font-medium">Uploaded</th>[m
+[32m+[m[32m                  </tr>[m
+[32m+[m[32m                </thead>[m
+[32m+[m[32m                <tbody className="divide-y divide-slate-800">[m
+[32m+[m[32m                  {documents.map((document) => ([m
+[32m+[m[32m                    <tr key={document.id}>[m
+[32m+[m[32m                      <td className="max-w-0 truncate px-3 py-3 text-slate-200">[m
+[32m+[m[32m                        {document.filename}[m
+[32m+[m[32m                      </td>[m
+[32m+[m[32m                      <td className="whitespace-nowrap px-3 py-3 text-slate-400">[m
+[32m+[m[32m                        {document.uploaded_at[m
+[32m+[m[32m                          ? new Date(document.uploaded_at).toLocaleString()[m
+[32m+[m[32m                          : "—"}[m
+[32m+[m[32m                      </td>[m
+[32m+[m[32m                    </tr>[m
+[32m+[m[32m                  ))}[m
+[32m+[m[32m                </tbody>[m
+[32m+[m[32m              </table>[m
+[32m+[m[32m            )}[m
+[32m+[m[32m          </div>[m
+[32m+[m
+[32m+[m[32m          <div className="mt-4 flex items-center justify-between border-t border-slate-800 pt-4">[m
+[32m+[m[32m            <button[m
+[32m+[m[32m              type="button"[m
+[32m+[m[32m              disabled={documentPage <= 1 || isLoadingDocuments}[m
+[32m+[m[32m              onClick={() => setDocumentPage((page) => page - 1)}[m
+[32m+[m[32m              className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"[m
+[32m+[m[32m            >[m
+[32m+[m[32m              Previous[m
+[32m+[m[32m            </button>[m
+[32m+[m[32m            <span className="text-sm text-slate-400">[m
+[32m+[m[32m              Page {documentTotal === 0 ? 0 : documentPage} of {documentTotalPages}[m
+[32m+[m[32m            </span>[m
+[32m+[m[32m            <button[m
+[32m+[m[32m              type="button"[m
+[32m+[m[32m              disabled={[m
+[32m+[m[32m                documentPage >= documentTotalPages || isLoadingDocuments[m
+[32m+[m[32m              }[m
+[32m+[m[32m              onClick={() => setDocumentPage((page) => page + 1)}[m
+[32m+[m[32m              className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"[m
+[32m+[m[32m            >[m
+[32m+[m[32m              Next[m
+[32m+[m[32m            </button>[m
+[32m+[m[32m          </div>[m
+[32m+[m[32m        </section>[m
+       </div>[m
+     </main>[m
+   );[m

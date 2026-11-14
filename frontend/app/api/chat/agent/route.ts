@@ -1,8 +1,9 @@
 import { getAuthToken, getBackendUrl } from "@/app/lib/auth";
-
+import { NextResponse } from "next/server";
 type AgentChatRequest = {
   question?: unknown;
   conversation_id?: unknown;
+  document_id?: unknown;
 };
 
 export async function POST(request: Request) {
@@ -35,7 +36,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const forwardedRequest: { question: string; conversation_id?: string } = {
+  const forwardedRequest: {
+    question: string;
+    conversation_id?: string;
+    document_id?: number;
+  } = {
     question: data.question,
   };
 
@@ -53,6 +58,21 @@ export async function POST(request: Request) {
     forwardedRequest.conversation_id = data.conversation_id;
   }
 
+  if (data.document_id !== undefined && data.document_id !== null) {
+    if (
+      typeof data.document_id !== "number" ||
+      !Number.isInteger(data.document_id) ||
+      data.document_id <= 0
+    ) {
+      return Response.json(
+        { detail: "document_id must be a positive integer when provided." },
+        { status: 400 },
+      );
+    }
+
+    forwardedRequest.document_id = data.document_id;
+  }
+
   try {
     const response = await fetch(`${getBackendUrl()}/chat/agent`, {
       method: "POST",
@@ -64,13 +84,17 @@ export async function POST(request: Request) {
       cache: "no-store",
     });
 
-    return new Response(await response.text(), {
-      status: response.status,
-      headers: {
-        "Content-Type":
-          response.headers.get("Content-Type") ?? "application/json",
-      },
-    });
+    let responseData: unknown;
+    try {
+      responseData = await response.json();
+    } catch {
+      return NextResponse.json(
+        { detail: "The chat service returned an invalid response." },
+        { status: 502 },
+      );
+    }
+
+    return NextResponse.json(responseData, { status: response.status });
   } catch {
     return Response.json(
       { detail: "The chat service is unavailable. Try again shortly." },

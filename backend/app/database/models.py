@@ -23,6 +23,8 @@ class DocumentChunk(Base):
     document_id = Column(String, nullable = False)
     chunk_text = Column(String, nullable = False)
     embedding = Column(Vector(384), nullable = False)
+    page_number = Column(Integer, nullable=True)
+    section_heading = Column(String, nullable=True)
 
 class Conversation(Base):
     __tablename__ = "conversations"

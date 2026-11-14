@@ -76,6 +76,7 @@ export default function DashboardClient({ userEmail }: DashboardClientProps) {
   const [errorMessage, setErrorMessage] = useState("");
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [documents, setDocuments] = useState<ListedDocument[]>([]);
+  const [selectedDocumentId, setSelectedDocumentId] = useState("");
   const [documentSearchInput, setDocumentSearchInput] = useState("");
   const [documentSearch, setDocumentSearch] = useState("");
   const [documentPage, setDocumentPage] = useState(1);
@@ -254,6 +255,29 @@ export default function DashboardClient({ userEmail }: DashboardClientProps) {
 
         <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 md:col-span-2">
           <h2 className="text-lg font-semibold">Ask your document</h2>
+          <label className="mt-3 block text-sm text-slate-300">
+            Search scope
+          </label>
+          <select
+            value={selectedDocumentId}
+            onChange={(event) => setSelectedDocumentId(event.target.value)}
+            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+          >
+            <option value="">All my documents</option>
+            {selectedDocumentId &&
+              !documents.some(
+                (document) => String(document.id) === selectedDocumentId,
+              ) && (
+                <option value={selectedDocumentId}>
+                  Selected document #{selectedDocumentId}
+                </option>
+              )}
+            {documents.map((document) => (
+              <option key={document.id} value={String(document.id)}>
+                {document.filename}
+              </option>
+            ))}
+          </select>
           {conversationId && (
             <p className="mt-2 break-all text-xs text-slate-500">
               Conversation ID: {conversationId}
@@ -330,6 +354,9 @@ export default function DashboardClient({ userEmail }: DashboardClientProps) {
                   body: JSON.stringify({
                     question: trimmedQuestion,
                     conversation_id: activeConversationId,
+                    ...(selectedDocumentId
+                      ? { document_id: Number(selectedDocumentId) }
+                      : {}),
                   }),
                 });
 

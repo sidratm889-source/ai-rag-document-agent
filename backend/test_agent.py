@@ -13,8 +13,10 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from app.agent.agent import (
     _asks_about_previous_message,
+    is_business_data_question,
     load_chat_history,
     run_agent,
+    run_source_only_document_query,
     save_chat_message,
     save_audit_log,
     create_conversation,
@@ -50,6 +52,34 @@ def test_agent_returns_final_answer():
 
     assert answer == "Hello! How can I help?"
     fake_client.chat.assert_called_once()
+
+
+def test_document_query_does_not_initialize_chat_model():
+    with patch(
+        "app.agent.agent.answer_document_question",
+        return_value="Source: resume.pdf\nSKILLS\nFRONTEND: React.js",
+    ), patch("app.agent.agent.get_client") as get_client, patch(
+        "app.agent.agent.save_chat_message",
+    ) as save_message, patch(
+        "app.agent.agent.save_audit_log",
+    ) as save_audit:
+        answer = run_source_only_document_query(
+            question="What skills are listed?",
+            conversation_id="source-only-conversation",
+            user_id=1,
+        )
+
+    assert answer == "Source: resume.pdf\nSKILLS\nFRONTEND: React.js"
+    get_client.assert_not_called()
+    assert save_message.call_count == 2
+    save_audit.assert_called_once()
+
+
+def test_business_data_detection_does_not_capture_document_content_questions():
+    assert is_business_data_question("How many documents do I have?")
+    assert not is_business_data_question(
+        "How many skills are listed in my uploaded PDF?"
+    )
     
 def test_agent_calls_search_tool_and_returns_answer():
     fake_client = MagicMock()
@@ -1017,7 +1047,7 @@ def test_search_document_content_returns_formatted_results():
     mock_retrieve.assert_called_once_with(
         "When does the restaurant open?",
         user_id=1,
-        limit=3,
+        limit=12,
     )
 def test_search_document_content_runs():
     with patch(
@@ -1037,7 +1067,7 @@ def test_search_document_content_runs():
             "chunk": "Restaurant opens at 9 AM.",
         }
     ]
-    mock_retrieve.assert_called_once_with("hello", user_id=1, limit=3)
+    mock_retrieve.assert_called_once_with("hello", user_id=1, limit=12)
 def test_create_embedding_raises_error_when_dimension_mismatches():
     fake_embedding = [0.1, 0.2, 0.3]
 
