@@ -420,26 +420,49 @@ This project is currently available for portfolio and educational purposes. A fo
 
 **Built with Python, FastAPI, Next.js, PostgreSQL, pgvector, and AI.**
 
-Project Img:
+Project Images:
 
 
 Signup Form 
 
+
+
+
 <img width="1066" height="808" alt="Screenshot (829)" src="https://github.com/user-attachments/assets/0552076a-ef7f-42fa-ac45-dcce1424b0cd" />
+
+
+
 
 Login Form 
 
+
+
+
 <img width="1125" height="838" alt="Screenshot (828)" src="https://github.com/user-attachments/assets/aca24aa5-7499-4e5c-94f1-5fc8267dcf29" />
+
+
 
 AI Document Assistant
 
+
+
 <img width="1584" height="673" alt="Screenshot (831)" src="https://github.com/user-attachments/assets/1f39dbde-36f3-4ffc-b659-ea12d463b1a0" />
+
+
 
 AI Chat Modal
 
+
+
+
 <img width="1188" height="810" alt="Screenshot (837)" src="https://github.com/user-attachments/assets/4f8c21b0-f803-4ab7-a7d4-bcc78f7c9877" />
 
+
+
 Document Library
+
+
+
 
 <img width="1147" height="758" alt="Screenshot (838)" src="https://github.com/user-attachments/assets/fc3ccfb7-428e-440d-b378-6a92b55f1a43" />
 
