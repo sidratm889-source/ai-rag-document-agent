@@ -420,3 +420,18 @@ This project is currently available for portfolio and educational purposes. A fo
 ---
 
 **Built with Python, FastAPI, Next.js, PostgreSQL, pgvector, and AI.**
+
+Project Img:
+
+<img width="1125" height="838" alt="Screenshot (828)" src="https://github.com/user-attachments/assets/aca24aa5-7499-4e5c-94f1-5fc8267dcf29" />
+
+
+
+
+
+
+
+
+
+
+
